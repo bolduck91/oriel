@@ -73,11 +73,24 @@ rather than by pushing this history (ADR 0012). The history is not sensitive so 
 it is *working material*.
 
 **Crosses over:** `src/`, `tests/`, `installer/`, `docs/`, `build.ps1`, `CONTEXT.md`,
-`CLAUDE.md`, `README.md`, `LICENSE`, `.gitignore`.
+`README.md`, `LICENSE`, `.gitignore`.
 
-**Stays behind:** `.scratch/` in its entirety — tickets, specs, research notes and the
-prototype that settled the starter statusline. Capture that prototype on a throwaway
-branch here if it is worth keeping; it does not travel.
+**Stays behind:**
+
+- `.scratch/` in its entirety — tickets, specs, research notes and the prototype that
+  settled the starter statusline. Capture that prototype on a throwaway branch here if
+  it is worth keeping; it does not travel.
+- `docs/agents/` — how the private tracker is laid out, the triage label strings, where
+  the domain docs live. It describes the working process rather than Oriel, so it is
+  git-ignored rather than merely filtered: it cannot be published even by a script that
+  forgets to exclude it.
+- `CLAUDE.md`, for the same reason and one more: its content is three pointers into
+  `docs/agents/`. Published without them it is not private material so much as three
+  dangling links — the exact debt the publication ticket existed to clear.
+
+The staging copy reads from **`git ls-files`**, not the working tree, so anything
+git-ignored is excluded automatically and only the root-file allow-list needs
+maintaining. That is the property worth preserving if this is ever rewritten.
 
 Before the first push, confirm both halves. Two traps are baked into the commands
 below because both were hit while writing them, and both fail *silently* — a check that
