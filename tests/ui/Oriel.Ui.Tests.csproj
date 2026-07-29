@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Oriel.UiTests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- A SECOND test project on purpose (ticket 07). tests/app deliberately
+         references no Avalonia so the logic layer stays testable with no window, no
+         screen and no display; pulling Avalonia in there to reach the skins would
+         give that up. The UI half gets its own project and its own headless
+         platform instead, and the two run side by side.
+
+         Source files are linked in rather than reached through a ProjectReference,
+         for the same reason tests/app links Core.cs: a reference to the app would
+         drag in its RuntimeIdentifier / SelfContained / PublishSingleFile settings.
+         Program.cs is deliberately NOT linked — it owns Main, the Win32 window
+         styles and the registry, none of which a test should load. -->
+    <Compile Include="..\..\src\app\Core.cs" Link="Core.cs" />
+    <Compile Include="..\..\src\app\Skins.cs" Link="Skins.cs" />
+    <Compile Include="..\..\src\app\Menu.cs" Link="Menu.cs" />
+    <Compile Include="..\..\src\app\Glass.cs" Link="Glass.cs" />
+    <Compile Include="..\..\src\app\Shadow.cs" Link="Shadow.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.2.3" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.2.3" />
+    <PackageReference Include="Avalonia.Headless" Version="11.2.3" />
+    <PackageReference Include="Avalonia.Headless.XUnit" Version="11.2.3" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+</Project>

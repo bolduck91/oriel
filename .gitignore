@@ -1,0 +1,7 @@
+# runtime user data lives under ~/.claude/oriel/, never in the repo
+*.bak
+
+# .NET build output (ADR 0008: the widget is now a compiled Avalonia app)
+bin/
+obj/
+dist/

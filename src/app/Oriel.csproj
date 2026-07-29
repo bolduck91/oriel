@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- Windows-only by nature (Run-key startup, DWM-backed acrylic); declaring it
+         here is what keeps the platform analyzer quiet honestly rather than by suppression. -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>Oriel</AssemblyName>
+    <RootNamespace>Oriel</RootNamespace>
+    <!-- The single place a release version is written. The widget reads it back off
+         the assembly for its update check, and the Inno script reads it from here, so
+         a release cannot advertise a version the binary is not. -->
+    <Version>1.0.0</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <!-- Published self-contained: a widget you double-click should never demand a
+         runtime install, and no net8.0 runtime can be assumed present — the machine
+         this was built on has only 6.0.36 machine-wide. Carrying our own runtime is
+         what buys back the no-setup launch we gave up with ADR 0008. -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.2.3" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.2.3" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.2.3" />
+  </ItemGroup>
+
+</Project>

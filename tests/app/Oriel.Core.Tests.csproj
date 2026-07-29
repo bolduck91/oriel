@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Oriel.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Core.cs is compiled INTO this project rather than referenced through the app.
+         A ProjectReference would drag in the app's RuntimeIdentifier / SelfContained /
+         PublishSingleFile settings and, with them, Avalonia — the exact UI dependency
+         the logic layer was kept free of so it could be tested without a window
+         (ticket 04, ADR 0008). Linking the one file keeps the test host plain. -->
+    <Compile Include="..\..\src\app\Core.cs" Link="Core.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+</Project>
