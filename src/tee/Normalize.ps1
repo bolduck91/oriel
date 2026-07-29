@@ -9,7 +9,10 @@
 # Pure and side-effect-free by design so it can be unit-tested without touching
 # the filesystem. The atomic write lives alongside it in Write-UsageState.ps1.
 
-Set-StrictMode -Version Latest
+# Strict mode is set inside ConvertTo-UsageRecord rather than here, and the helpers
+# inherit it as child scopes. At file scope it would be set in whatever scope
+# dot-sourced this — the user's statusline — which broke rendering on machines with no
+# rate-limit data (see the note in Write-UsageState.ps1, field report oriel#1).
 
 # Read a property by name, returning $null if it's absent. Needed because
 # Set-StrictMode -Version Latest throws on references to non-existent properties,
@@ -68,6 +71,10 @@ function ConvertTo-UsageRecord {
         [Parameter(Mandatory = $true)]
         [long] $Now
     )
+
+    # Deliberately here and not at file scope: the strict-safe property reads below
+    # depend on it, and the caller's scope must not.
+    Set-StrictMode -Version Latest
 
     if ($null -eq $StatusJson) { return $null }
 

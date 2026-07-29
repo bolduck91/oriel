@@ -39,6 +39,54 @@ Write-UsageState -StatusJson `$j $Arguments -Now 7 | Out-Null
     return $LASTEXITCODE
 }
 
+Describe 'The tee leaves the scope that dot-sources it alone' {
+    # The managed block dot-sources this file from inside the user's own statusline. A
+    # file-scope `Set-StrictMode -Version Latest` therefore configured THEIR script, not
+    # ours: from the block down, every read of an absent key threw instead of yielding
+    # $null, and their statusline fell back to its error output on every render. It
+    # reproduced only when rate_limits was absent — Free accounts, and every session
+    # before its first reply (field report, oriel#1).
+    #
+    # This has to run in a child process: strict mode in this scope would be inherited
+    # by everything after it in the suite, which is the very property being tested.
+    It 'does not set strict mode in the caller''s scope' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("oriel-scope-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        try {
+            $tee = (Resolve-Path (Join-Path $here '..\src\tee\Write-UsageState.ps1')).Path
+            $body = @"
+`$ErrorActionPreference = 'Stop'
+. '$tee'
+# Ordinary PowerShell against an optional-key payload: absent means `$null, not a throw.
+`$payload = [pscustomobject]@{ model = 'x' }
+`$absent = `$payload.rate_limits
+if (`$null -eq `$absent) { 'tolerated' } else { 'unexpected' }
+"@
+            $file = Join-Path $dir 'scope.ps1'
+            Set-Content -LiteralPath $file -Value $body -Encoding utf8
+            $out = & pwsh -NoProfile -File $file 2>&1
+            $LASTEXITCODE | Should Be 0
+            ($out | Out-String).Trim() | Should Be 'tolerated'
+        } finally {
+            Remove-Item -Recurse -Force $dir
+        }
+    }
+
+    It 'still reads absent properties safely inside its own functions' {
+        # The other half of moving the setting: the tee's own strict-safe reads must keep
+        # working, so the never-tee-nulls guarantee cannot quietly become a throw.
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("oriel-absent-" + [guid]::NewGuid().ToString('N'))
+        try {
+            $err = Get-Thrown { Write-UsageState -StatusJson ([pscustomobject]@{ model = 'x' }) -StateDir $dir -Now 1 | Out-Null }
+            $err | Should Be $null
+            # And it reached the never-tee-nulls answer rather than merely not throwing.
+            (Test-Path -LiteralPath (Join-Path $dir 'current.json')) | Should Be $false
+        } finally {
+            if (Test-Path -LiteralPath $dir) { Remove-Item -Recurse -Force $dir }
+        }
+    }
+}
+
 Describe 'Write-UsageState' {
     BeforeEach {
         $script:dir = Join-Path ([System.IO.Path]::GetTempPath()) ("oriel-test-" + [guid]::NewGuid().ToString('N'))

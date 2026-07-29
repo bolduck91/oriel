@@ -39,21 +39,96 @@ function Get-DominantNewline {
 # `=` keeps `-eq`-style comparisons and `==` typos from reading as assignments.
 $script:AssignmentPattern = '\$((?:global:|script:|local:|private:)?[A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)'
 
+# The ways a PowerShell statusline can get hold of what Claude Code pushed on standard
+# input. This list is the whole reason the anchor is trustworthy: `ConvertFrom-Json` on
+# its own says nothing about *which* JSON is being parsed, and a statusline that reads
+# its own settings, a cache or `git` output through ConvertFrom-Json is completely
+# ordinary. Anchoring on the first conversion found patched such a line on a real user's
+# machine and produced a silent no-op every render (field report, oriel#1).
+$script:StdinPatterns = @(
+    '\[(?:System\.)?Console\]::In\b',                 # [Console]::In.ReadToEnd()
+    '\[(?:System\.)?Console\]::OpenStandardInput\b',   # a StreamReader over it
+    '\$input\b',                                       # the automatic pipeline variable
+    '\bGet-Content\b[^|;]*(?<![\w.\-])-(?=\s|$)'       # Get-Content -Raw -   (bare `-` is stdin)
+)
+
+function script:Test-ReadsStdinDirectly {
+    param([string] $Fragment)
+    if ([string]::IsNullOrEmpty($Fragment)) { return $false }
+    foreach ($pattern in $script:StdinPatterns) {
+        if ([regex]::IsMatch($Fragment, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+function Test-ReadsStandardInput {
+    <#
+    .SYNOPSIS
+        Does this script read standard input at all?
+    .DESCRIPTION
+        Used only to tell two refusals apart: a statusline that never reads the pushed
+        JSON is a different problem, with different advice, from one that reads it and
+        then throws it away. Comments do not count.
+    #>
+    param([string] $Text)
+    if ([string]::IsNullOrEmpty($Text)) { return $false }
+    foreach ($line in (script:Split-IntoLines $Text).Texts) {
+        if ($line.TrimStart().StartsWith('#')) { continue }
+        if (script:Test-ReadsStdinDirectly $line) { return $true }
+    }
+    return $false
+}
+
+function script:Split-IntoLines {
+    <#
+    .SYNOPSIS
+        The file's lines, with the character offset just past each terminator.
+    .DESCRIPTION
+        Walks the raw text rather than using Get-Content, because the insertion index
+        has to be an offset into the exact bytes the user has on disk.
+    #>
+    param([string] $Text)
+    $ends  = New-Object System.Collections.Generic.List[int]      # index past the terminator
+    $texts = New-Object System.Collections.Generic.List[string]
+
+    $start = 0
+    for ($i = 0; $i -lt $Text.Length; $i++) {
+        if ($Text[$i] -eq "`n") {
+            $ends.Add($i + 1)
+            $texts.Add($Text.Substring($start, $i + 1 - $start).TrimEnd("`r", "`n"))
+            $start = $i + 1
+        }
+    }
+    if ($start -lt $Text.Length) {
+        $ends.Add($Text.Length)              # no terminator: the file ends here
+        $texts.Add($Text.Substring($start))
+    }
+    [pscustomobject]@{ Ends = $ends; Texts = $texts }
+}
+
 function Find-JsonAssignment {
     <#
     .SYNOPSIS
-        Locate the assignment that keeps the pushed JSON — the definition of a
-        **supported statusline** (ADR 0011) and therefore the anchor the **managed
-        block** is inserted after.
+        Locate the assignment that keeps the JSON *pushed on standard input* — the
+        definition of a **supported statusline** (ADR 0011) and therefore the anchor
+        the **managed block** is inserted after.
     .DESCRIPTION
         Standard input can be read only once, so the block cannot fetch the JSON; it
-        can only borrow a variable that already holds it. That variable is found by
-        looking for `ConvertFrom-Json` and then, on the same logical line, the
-        assignment target to its left:
+        can only borrow a variable that already holds it. Finding that variable takes
+        two facts, not one: an assignment through `ConvertFrom-Json`, *and* a chain
+        back to a read of standard input.
 
-            $d = $raw | ConvertFrom-Json
-            try { $d = $raw | ConvertFrom-Json } catch { $d = $null }
-            $d = ConvertFrom-Json $raw
+            $raw = [Console]::In.ReadToEnd()
+            $d = $raw | ConvertFrom-Json                       <- anchor here
+            try { $d = $raw | ConvertFrom-Json } catch { }     <- or here
+            $d = ConvertFrom-Json $raw                         <- or here
+            $d = [Console]::In.ReadToEnd() | ConvertFrom-Json  <- or here
+
+        The lineage is tracked forward: the variable a read of standard input is
+        assigned to is marked, and so is anything later assigned from something
+        already marked (`$raw.Trim()`, `-join $lines`). A conversion whose right-hand
+        side mentions none of them is somebody else's JSON — settings, a cache, `git`
+        output — and is skipped rather than patched.
 
         A line that pipes the JSON onward without keeping it has no assignment to its
         left and is correctly not found — that statusline cannot be served.
@@ -70,30 +145,15 @@ function Find-JsonAssignment {
 
     if ([string]::IsNullOrEmpty($Text)) { return $null }
 
-    # Walk the raw text rather than Get-Content's array, because the insertion index
-    # has to be a character offset into the exact bytes the user has on disk.
-    $lineStarts = New-Object System.Collections.Generic.List[int]
-    $lineEnds   = New-Object System.Collections.Generic.List[int]   # index past the terminator
-    $lineTexts  = New-Object System.Collections.Generic.List[string]
+    $lines = script:Split-IntoLines $Text
 
-    $start = 0
-    for ($i = 0; $i -lt $Text.Length; $i++) {
-        if ($Text[$i] -eq "`n") {
-            $lineStarts.Add($start)
-            $lineEnds.Add($i + 1)
-            $lineTexts.Add($Text.Substring($start, $i + 1 - $start).TrimEnd("`r", "`n"))
-            $start = $i + 1
-        }
-    }
-    if ($start -lt $Text.Length) {
-        $lineStarts.Add($start)
-        $lineEnds.Add($Text.Length)          # no terminator: the file ends here
-        $lineTexts.Add($Text.Substring($start))
-    }
+    # Variables known to hold what arrived on standard input. A hashtable is the set:
+    # PowerShell's are case-insensitive, which is what variable names are.
+    $carriesStdin = @{}
 
     $inManagedBlock = $false
-    for ($n = 0; $n -lt $lineTexts.Count; $n++) {
-        $line = $lineTexts[$n]
+    for ($n = 0; $n -lt $lines.Texts.Count; $n++) {
+        $line = $lines.Texts[$n]
         $trimmed = $line.TrimStart()
 
         if ($trimmed.StartsWith($script:BeginMark) -or $trimmed.StartsWith($script:LegacyBeginMark)) { $inManagedBlock = $true }
@@ -104,43 +164,86 @@ function Find-JsonAssignment {
         if ($trimmed.StartsWith('#')) { continue }
 
         $at = $line.IndexOf('ConvertFrom-Json', [System.StringComparison]::OrdinalIgnoreCase)
-        if ($at -lt 0) { continue }
-
-        # The assignment is normally on this line, to the left of the conversion. It
-        # can also be one or more lines up when the pipeline is broken across lines,
-        # in which case each intervening line ends with a pipe.
-        $variable = script:Get-AssignmentTarget $line.Substring(0, $at)
-        if ($null -eq $variable) {
-            $back = $n - 1
-            while ($null -eq $variable -and $back -ge 0) {
-                $previous = $lineTexts[$back].TrimEnd()
-                if (-not $previous.EndsWith('|')) { break }
-                $variable = script:Get-AssignmentTarget $previous
-                $back--
-            }
+        if ($at -lt 0) {
+            script:Add-StdinLineage -Line $line -CarriesStdin $carriesStdin
+            continue
         }
-        if ($null -eq $variable) { continue }   # piped straight through: nothing kept
 
-        $hasTerminator = $lineEnds[$n] -gt 0 -and $Text[$lineEnds[$n] - 1] -eq "`n"
+        # The conversion's logical line: this one, plus any lines above it that ended
+        # in a pipe, which is how a broken-across-lines pipeline reaches it.
+        $fragment = $line
+        $back = $n - 1
+        while ($back -ge 0) {
+            $previous = $lines.Texts[$back].TrimEnd()
+            if (-not $previous.EndsWith('|')) { break }
+            $fragment = $previous + ' ' + $fragment
+            $back--
+        }
+
+        # The assignment is the rightmost one to the left of the conversion. Rightmost,
+        # not leftmost, because `try { $d = $raw | ConvertFrom-Json }` has the `try {`
+        # in front of it and the target is the nearest one.
+        $atInFragment = $fragment.IndexOf('ConvertFrom-Json', [System.StringComparison]::OrdinalIgnoreCase)
+        $assignment = script:Find-Assignment $fragment.Substring(0, $atInFragment)
+        if ($null -eq $assignment) { continue }   # piped straight through: nothing kept
+
+        # Only the right-hand side is asked about standard input, so a variable that
+        # happens to share a name with a marked one cannot vouch for itself.
+        if (-not (script:Test-CarriesStdin -Fragment $fragment.Substring($assignment.EndIndex) -CarriesStdin $carriesStdin)) {
+            script:Add-StdinLineage -Line $line -CarriesStdin $carriesStdin
+            continue
+        }
+
+        $hasTerminator = $lines.Ends[$n] -gt 0 -and $Text[$lines.Ends[$n] - 1] -eq "`n"
         return [pscustomobject]@{
-            Variable      = $variable
-            InsertAt      = $lineEnds[$n]
+            Variable      = $assignment.Variable
+            InsertAt      = $lines.Ends[$n]
             HasTerminator = $hasTerminator
         }
     }
     return $null
 }
 
-# The rightmost assignment to the left of the conversion. Rightmost, not leftmost,
-# because `try { $d = $raw | ConvertFrom-Json }` has the `try {` in front of it and
-# the target is the nearest one.
-function script:Get-AssignmentTarget {
+function script:Find-Assignment {
+    <#
+    .SYNOPSIS
+        The rightmost assignment in a fragment: the variable it targets, and where its
+        right-hand side begins.
+    #>
     param([string] $Fragment)
     # Not $matches: that is an automatic variable, and shadowing it here would make
     # every regex operator downstream in this scope read someone else's captures.
     $found = [regex]::Matches($Fragment, $script:AssignmentPattern)
     if ($found.Count -eq 0) { return $null }
-    '$' + $found[$found.Count - 1].Groups[1].Value
+    $last = $found[$found.Count - 1]
+    $name = $last.Groups[1].Value
+    [pscustomobject]@{
+        Variable = '$' + $name                       # as it will be written into the block
+        Name     = ($name -replace '^(?:global:|script:|local:|private:)', '')
+        EndIndex = $last.Index + $last.Length        # just past the `=`
+    }
+}
+
+function script:Test-CarriesStdin {
+    # Either it reads standard input right here, or it borrows from something that did.
+    param([string] $Fragment, $CarriesStdin)
+    if (script:Test-ReadsStdinDirectly $Fragment) { return $true }
+    foreach ($name in $CarriesStdin.Keys) {
+        $pattern = '\$(?:global:|script:|local:|private:)?' + [regex]::Escape($name) + '\b'
+        if ([regex]::IsMatch($Fragment, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+function script:Add-StdinLineage {
+    # One step of the forward taint: if this line assigns from standard input, or from
+    # a variable already carrying it, its target carries it too.
+    param([string] $Line, $CarriesStdin)
+    $assignment = script:Find-Assignment $Line
+    if ($null -eq $assignment) { return }
+    if (script:Test-CarriesStdin -Fragment $Line.Substring($assignment.EndIndex) -CarriesStdin $CarriesStdin) {
+        $CarriesStdin[$assignment.Name] = $true
+    }
 }
 
 function New-OrielBlock {
@@ -152,6 +255,16 @@ function New-OrielBlock {
         else's statusline and must never break the line it was inserted into. That
         is also why the installer verifies afterwards — a try/catch that swallows a
         wrong guess is invisible without it (ticket 06).
+
+        The dot-source happens inside `& { }`, in a child scope. A bare `.` executes
+        the tee in the *caller's* scope, and anything the tee sets at file scope then
+        belongs to the user's statusline from this line down — which is not a
+        theoretical worry: `Set-StrictMode -Version Latest` leaked that way and turned
+        every optional-key read in the host script into a throw, on exactly the
+        accounts that have no rate-limit data to show (field report, oriel#1). The tee
+        no longer sets it at file scope, and this makes the boundary structural rather
+        than a promise: a try/catch cannot help here, because by the time it catches,
+        the preference has already been set in a scope that outlives the block.
     #>
     param(
         [Parameter(Mandatory = $true)] [string] $TeePath,
@@ -160,7 +273,7 @@ function New-OrielBlock {
     )
     # Built by concatenation rather than a here-string: the block contains a `$`
     # variable and a user-supplied path, and both would be read as substitutions.
-    $body = "try { . '" + $TeePath + "'; Write-UsageState -StatusJson " + $Variable + " | Out-Null } catch { }"
+    $body = "try { & { . '" + $TeePath + "'; Write-UsageState -StatusJson " + $Variable + " | Out-Null } } catch { }"
     $script:BeginMark + $Newline + $body + $Newline + $script:EndMark
 }
 
@@ -410,9 +523,15 @@ function Get-StatuslineTriage {
 
     $anchor = Find-JsonAssignment $text
     if ($null -eq $anchor) {
+        # Two different problems, and they want different advice: a statusline that
+        # never reads what Claude Code pushed, and one that reads it but keeps nothing.
+        # Refusing loudly is the point — the alternative is patching a guess, which is
+        # what produced a silent no-op on a real machine (oriel#1).
+        $reason = 'no-json-assignment'
+        if (-not (Test-ReadsStandardInput $text)) { $reason = 'no-stdin-source' }
         return [pscustomobject]@{
             Verdict = 'refuse'
-            Reason  = 'no-json-assignment'
+            Reason  = $reason
             ScriptPath = $resolved.ScriptPath
             Variable = $null
             Command = $command
@@ -462,6 +581,14 @@ function Get-RefusalExplanation {
             "it in a variable — it reads standard input and passes it straight on. Standard " +
             "input can only be read once, so Oriel has nothing to borrow.`r`n  Statusline: $ScriptPath"
         }
+        'no-stdin-source' {
+            "Your statusline is PowerShell, but Oriel cannot see where it reads what Claude " +
+            "Code pushes to it. It looks for a read of standard input — [Console]::In, " +
+            "OpenStandardInput, `$input, or Get-Content with a bare dash — and then for the " +
+            "line that parses it. Rather than patch a line it guessed at, Oriel has stopped " +
+            "and changed nothing: a wrong guess here is silent, and would leave the widget " +
+            "showing dashes forever.`r`n  Statusline: $ScriptPath"
+        }
         default { "Oriel cannot install into this statusline." }
     }
 }
@@ -480,11 +607,13 @@ My Claude Code statusline is at:
   $target
 
 Please rewrite it as a Windows PowerShell script that:
-  1. reads all of standard input once, into a single string;
-  2. assigns the parsed JSON to a variable on one line, e.g.
+  1. reads all of standard input once, into a variable, e.g.
+       `$raw = [Console]::In.ReadToEnd()
+  2. assigns the parsed JSON to a variable on one line, from that variable, e.g.
        `$d = `$raw | ConvertFrom-Json
-     (the assignment matters — a tool needs a variable that still holds the JSON,
-     because standard input can only be read once);
+     (both halves matter — a tool needs a variable that still holds the JSON, because
+     standard input can only be read once, and it has to be able to see that the JSON
+     came from standard input rather than from a settings file or a cache);
   3. produces exactly the same output my current statusline produces;
   4. runs under Windows PowerShell 5.1 and is saved with a UTF-8 BOM.
 

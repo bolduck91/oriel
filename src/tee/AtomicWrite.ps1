@@ -13,7 +13,9 @@
 # disk forever. Hence the cleanup below (ticket 09) — on failure for our own temp,
 # and on a later write for temps whose session never came back.
 
-Set-StrictMode -Version Latest
+# Strict mode is set inside the functions, not here: this file is reached by a
+# dot-source from inside the user's statusline, and at file scope the setting would
+# land in their scope rather than ours (see the note in Write-UsageState.ps1).
 
 # How long a temp must sit untouched before a later write treats it as abandoned.
 # An hour is far longer than any write takes, which is the point: the risk to
@@ -39,6 +41,7 @@ function Remove-OrphanedTemp {
         [Parameter(Mandatory = $true)][string] $Path,
         [Parameter(Mandatory = $true)][int]    $OlderThanSeconds
     )
+    Set-StrictMode -Version Latest
     try {
         $dir  = Split-Path -Parent $Path
         $leaf = Split-Path -Leaf   $Path
@@ -68,6 +71,7 @@ function Write-JsonAtomic {
         [Parameter()][switch] $Compress,
         [Parameter()][int] $OrphanTempSeconds = $script:DefaultOrphanTempSeconds
     )
+    Set-StrictMode -Version Latest
     $dir = Split-Path -Parent $Path
     if ($dir -and -not (Test-Path -LiteralPath $dir)) {
         New-Item -ItemType Directory -Force -Path $dir | Out-Null

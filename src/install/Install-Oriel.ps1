@@ -424,11 +424,29 @@ function script:Test-DataFlows {
     New-Item -ItemType Directory -Path $probeDir -Force | Out-Null
     $probeFile = Join-Path $probeDir 'current.json'
 
+    try {
+        $run = script:Invoke-Statusline -Command $Command -StdIn (script:Get-ProbePayload) -StateDir $probeDir -TimeoutSeconds $VerifyTimeoutSeconds
+        if ($null -eq $run.ExitCode) {
+            return [pscustomobject]@{ Ok = $false; Detail = "the statusline did not finish within $VerifyTimeoutSeconds seconds" }
+        }
+        if (Test-Path -LiteralPath $probeFile) {
+            return [pscustomobject]@{ Ok = $true; Detail = 'the state file appeared' }
+        }
+        return [pscustomobject]@{
+            Ok = $false
+            Detail = "the statusline ran (exit $($run.ExitCode)) but wrote no state file"
+        }
+    } finally {
+        try { Remove-Item -LiteralPath $probeDir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+    }
+}
+
+function script:Get-ProbePayload {
     # Representative, and deliberately complete: the tee's never-tee-nulls rule means
     # a payload without both windows would write nothing and the probe would report a
     # failure that is really our own fault.
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-    $payload = [pscustomobject]@{
+    [pscustomobject]@{
         model = [pscustomobject]@{ display_name = 'Oriel install check' }
         context_window = [pscustomobject]@{ used_percentage = 12 }
         workspace = [pscustomobject]@{ current_dir = $HomeDir }
@@ -437,22 +455,97 @@ function script:Test-DataFlows {
             seven_day = [pscustomobject]@{ used_percentage = 34; resets_at = ($now + 4 * 86400) }
         }
     } | ConvertTo-Json -Depth 10 -Compress
+}
 
-    try {
-        $exit = script:Invoke-Statusline -Command $Command -StdIn $payload -StateDir $probeDir -TimeoutSeconds $VerifyTimeoutSeconds
-        if ($null -eq $exit) {
-            return [pscustomobject]@{ Ok = $false; Detail = "the statusline did not finish within $VerifyTimeoutSeconds seconds" }
-        }
-        if (Test-Path -LiteralPath $probeFile) {
-            return [pscustomobject]@{ Ok = $true; Detail = 'the state file appeared' }
-        }
-        return [pscustomobject]@{
-            Ok = $false
-            Detail = "the statusline ran (exit $exit) but wrote no state file"
-        }
-    } finally {
-        try { Remove-Item -LiteralPath $probeDir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+function script:Get-SparsePayload {
+    <#
+    .SYNOPSIS
+        The payload with nothing optional in it: a model name and nothing else.
+    .DESCRIPTION
+        This is the shape that catches damage to the *host* statusline rather than to
+        Oriel. `rate_limits` is absent on Free accounts and on every session before its
+        first API response, and `context_window` and `workspace` need not be there
+        either — so a statusline reading those keys directly is reading keys that may
+        not exist, which is ordinary and correct PowerShell. Anything the block leaks
+        into that scope (a strict mode, an $ErrorActionPreference) shows up here and
+        nowhere else. A complete payload passes cleanly and proves nothing, which is
+        how such a leak shipped in v1.0.0 (oriel#1).
+    #>
+    [pscustomobject]@{ model = [pscustomobject]@{ display_name = 'Oriel install check' } } |
+        ConvertTo-Json -Depth 10 -Compress
+}
+
+function script:Get-HostOutputBaseline {
+    <#
+    .SYNOPSIS
+        What the user's statusline prints for a sparse payload *before* it is patched —
+        the thing the patch is not allowed to change.
+    .DESCRIPTION
+        Rendered twice, and the baseline is discarded unless the two agree. A statusline
+        that prints a clock, a spinner or a git revision is not comparable to itself,
+        and holding one to a byte-for-byte rule would fail installs that are perfectly
+        fine. Losing the check on those statuslines is the right trade: a false alarm
+        that blocks an install costs more than a missed one.
+    .OUTPUTS
+        The agreed output, or $null when there is nothing dependable to compare against.
+    #>
+    param([string] $Command)
+
+    $payload = script:Get-SparsePayload
+    $first  = script:Invoke-Statusline -Command $Command -StdIn $payload -StateDir (script:New-ProbeDir) -TimeoutSeconds $VerifyTimeoutSeconds
+    if ($null -eq $first.ExitCode) { return $null }
+    $second = script:Invoke-Statusline -Command $Command -StdIn $payload -StateDir (script:New-ProbeDir) -TimeoutSeconds $VerifyTimeoutSeconds
+    if ($null -eq $second.ExitCode) { return $null }
+    if ($first.StdOut -ne $second.StdOut) { return $null }
+    return $first.StdOut
+}
+
+function script:Test-HostOutputUnchanged {
+    <#
+    .SYNOPSIS
+        Render the sparse payload again, now that the block is in, and insist the user's
+        statusline still prints exactly what it printed before.
+    .OUTPUTS
+        An object with Ok and Detail. Ok is $true when there was no baseline to compare.
+    #>
+    # $Baseline is deliberately untyped: a [string] parameter coerces $null to the empty
+    # string, and "there was no dependable baseline" would silently become "it printed
+    # nothing" — the difference between skipping the check and failing it.
+    param([string] $Command, $Baseline)
+
+    if ($null -eq $Baseline) { return [pscustomobject]@{ Ok = $true; Detail = 'no comparable baseline' } }
+
+    $run = script:Invoke-Statusline -Command $Command -StdIn (script:Get-SparsePayload) -StateDir (script:New-ProbeDir) -TimeoutSeconds $VerifyTimeoutSeconds
+    if ($null -eq $run.ExitCode) {
+        return [pscustomobject]@{ Ok = $false; Detail = 'with the block in place, your statusline did not finish' }
     }
+    if ($run.StdOut -eq $Baseline) { return [pscustomobject]@{ Ok = $true; Detail = 'unchanged' } }
+
+    $detail = 'the block changed what your statusline prints when there is no rate-limit data'
+    if ([string]::IsNullOrWhiteSpace($run.StdOut) -and -not [string]::IsNullOrWhiteSpace($Baseline)) {
+        $detail = 'with the block in place your statusline printed nothing, where before it printed its normal line'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($run.StdErr)) { $detail += ' — it reported: ' + ($run.StdErr.Trim() -split "`r?`n")[0] }
+    return [pscustomobject]@{ Ok = $false; Detail = $detail }
+}
+
+# Every render the installer triggers is pointed at a throwaway directory, so a probe
+# payload can never land in the user's real current.json and show them numbers that
+# were never true.
+function script:New-ProbeDir {
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('oriel-verify-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $script:ProbeDirs += $dir
+    return $dir
+}
+
+$script:ProbeDirs = @()
+
+function script:Remove-ProbeDirs {
+    foreach ($dir in $script:ProbeDirs) {
+        try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+    }
+    $script:ProbeDirs = @()
 }
 
 function script:Invoke-Statusline {
@@ -461,12 +554,17 @@ function script:Invoke-Statusline {
         Run a declared statusline command with JSON on its standard input, under a
         bounded wait so verification can never hang the installer.
     .OUTPUTS
-        The exit code, or $null if it had to be killed.
+        ExitCode, StdOut and StdErr. ExitCode is $null when the command could not be
+        started or had to be killed — the caller must treat that as "nothing observed",
+        never as a pass. StdOut is what the user would see on their status line, which
+        is what makes "the patch changed nothing they can see" checkable.
     #>
     param([string] $Command, [string] $StdIn, [string] $StateDir, [int] $TimeoutSeconds)
 
+    $nothing = [pscustomobject]@{ ExitCode = $null; StdOut = ''; StdErr = '' }
+
     $tokens = Split-CommandLine $Command
-    if ($tokens.Count -eq 0) { return $null }
+    if ($tokens.Count -eq 0) { return $nothing }
 
     $exe = $tokens[0]
     $rest = @()
@@ -494,7 +592,8 @@ function script:Invoke-Statusline {
     $psi.CreateNoWindow = $true
     $psi.WorkingDirectory = $HomeDir
     # The one hook the tee honours for this: the probe render writes here instead of
-    # over the user's real record.
+    # over the user's real record. It is documented for users too — it is the same hook
+    # that makes a statusline safe to test by hand.
     $psi.EnvironmentVariables['ORIEL_STATE_DIR'] = $StateDir
 
     $proc = $null
@@ -509,14 +608,18 @@ function script:Invoke-Statusline {
         $stderr = $proc.StandardError.ReadToEndAsync()
         if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
             try { $proc.Kill() } catch { }
-            return $null
+            return $nothing
         }
         [void]$stdout.Wait(1000)
         [void]$stderr.Wait(1000)
-        return $proc.ExitCode
+        return [pscustomobject]@{
+            ExitCode = $proc.ExitCode
+            StdOut   = [string]$stdout.Result
+            StdErr   = [string]$stderr.Result
+        }
     } catch {
         script:Say "Could not run the statusline: $($_.Exception.Message)" 'Yellow'
-        return $null
+        return $nothing
     } finally {
         if ($null -ne $proc) { $proc.Dispose() }
     }
@@ -612,6 +715,13 @@ function script:Invoke-Install {
 
     $script:Report.statuslinePath = $statuslinePath
 
+    # Before touching the file: what does this statusline print when the payload has no
+    # rate-limit data in it? That is the population the block is most likely to damage
+    # and the only one where the damage shows, so the answer has to be taken while the
+    # file is still theirs alone (ticket 06 / oriel#1).
+    $baseline = $null
+    if (-not $SkipVerify) { $baseline = script:Get-HostOutputBaseline -Command (script:Get-Triage).Command }
+
     # Patch. Everything around the block is left byte for byte as it was.
     $original = script:Read-TextOrNull $statuslinePath
     if ($null -eq $original) { throw "The statusline vanished between triage and patching: $statuslinePath" }
@@ -626,8 +736,10 @@ function script:Invoke-Install {
     # Back up once, and never clobber an existing backup: the backup is a safety net
     # for a failed removal, not the method uninstall uses (ADR 0011).
     $backup = $statuslinePath + '.bak'
+    $backupCreated = $false
     if (-not (Test-Path -LiteralPath $backup)) {
         Copy-Item -LiteralPath $statuslinePath -Destination $backup -Force
+        $backupCreated = $true
         $script:Report.changed += "backed the original up to $backup"
     }
 
@@ -654,18 +766,58 @@ function script:Invoke-Install {
     # Verify against the command Claude Code will actually run, not against the file
     # we happened to patch — they are the same thing only if the declaration is right.
     $command = (script:Get-Triage).Command
-    $check = script:Test-DataFlows -Command $command
-    $script:Report.verified = $check.Ok
+    try {
+        $check = script:Test-DataFlows -Command $command
 
-    if ($check.Ok) {
-        $script:Report.message = 'Installed and verified: Claude Code is now writing usage data for the widget.'
-        script:Say ''
-        script:Say $script:Report.message 'Green'
-        script:Complete $script:ExitOk
-    }
+        # Two independent questions, and both have to be answered before the word
+        # "installed" is used: does data now flow, and does the user's own statusline
+        # still print what it printed before? The second is not a formality — the block
+        # is a side effect inside someone else's script, and the way it went wrong in
+        # v1.0.0 was invisible to the first check (oriel#1).
+        $preserved = [pscustomobject]@{ Ok = $true; Detail = 'not checked' }
+        if ($check.Ok) { $preserved = script:Test-HostOutputUnchanged -Command $command -Baseline $baseline }
 
-    # Not a success. Say what was patched, where the file was expected, and what to try.
-    $script:Report.message = @"
+        $script:Report.verified = ($check.Ok -and $preserved.Ok)
+
+        if ($script:Report.verified) {
+            $script:Report.message = 'Installed and verified: Claude Code is now writing usage data for the widget, and your statusline still renders exactly as it did.'
+            script:Say ''
+            script:Say $script:Report.message 'Green'
+            script:Complete $script:ExitOk
+        }
+
+        if (-not $preserved.Ok) {
+            # This one is not left in place to be looked at. The block is only worth
+            # having if it is invisible, and a statusline the user looks at all day is
+            # worth more than the widget (ADR 0011) — so it goes back to the file they
+            # had, in this same run, before the report is printed.
+            script:Write-TextPreservingEncoding -Path $statuslinePath -Text $original -HadBom $hadBom
+            # The backup was insurance for exactly this, and it has done its job. Only
+            # the one this run made is removed — an older one is not ours to delete.
+            if ($backupCreated -and (Test-Path -LiteralPath $backup)) { Remove-Item -LiteralPath $backup -Force }
+            $script:Report.verdict = 'rolled-back'
+            $script:Report.changed += "removed the managed block again from $statuslinePath"
+            $script:Report.message = @"
+Oriel patched your statusline, saw that the patch changed what your statusline prints,
+and TOOK THE PATCH BACK OUT. Your statusline is exactly as it was, and Oriel is not
+installed.
+
+  What happened    : $($preserved.Detail)
+  What was tested  : a render with no rate-limit data in the payload — the shape a Free
+                     account, and any session before its first reply, actually gets
+  Your statusline  : $statuslinePath (unchanged)
+
+This is a bug in Oriel, not in your statusline. Please report it with the statusline
+you have, at https://github.com/bolduck91/oriel/issues — a statusline that behaves
+differently once the block is in is exactly what this check exists to find.
+"@
+            script:Say ''
+            script:Say $script:Report.message 'Red'
+            script:Complete $script:ExitUnverified
+        }
+
+        # Patched, no data. Say what was changed, where the file was expected, what to try.
+        $script:Report.message = @"
 Oriel patched your statusline but could not observe it producing data, so this is not
 being reported as a successful install.
 
@@ -675,14 +827,22 @@ being reported as a successful install.
 
 What to try:
   1. Run your statusline by hand and check it does not error.
-  2. Confirm the managed block sits after the line that assigns the parsed JSON.
+  2. Look at the block Oriel inserted: it should sit directly after the line that
+     parses the JSON your statusline read from standard input, and reference the
+     variable that line assigns.
   3. Rate-limit data only exists on Pro/Max accounts and only after the first API
      response of a session — if you have just signed in, wait for a reply and re-run.
-  4. Undo everything with: -Action uninstall
+  4. To try it by hand without touching your real data, point the tee somewhere else:
+       `$env:ORIEL_STATE_DIR = "`$env:TEMP\oriel-probe"
+       '{"model":{"display_name":"x"}}' | & <your statusline>
+  5. Undo everything with: -Action uninstall
 "@
-    script:Say ''
-    script:Say $script:Report.message 'Red'
-    script:Complete $script:ExitUnverified
+        script:Say ''
+        script:Say $script:Report.message 'Red'
+        script:Complete $script:ExitUnverified
+    } finally {
+        script:Remove-ProbeDirs
+    }
 }
 
 function script:Invoke-Uninstall {

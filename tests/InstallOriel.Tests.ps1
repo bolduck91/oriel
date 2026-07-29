@@ -20,21 +20,30 @@ $script:TeePath   = (Resolve-Path (Join-Path $here '..\src\tee\Write-UsageState.
 
 # ---- the shape table -------------------------------------------------------
 #
-# Every one of these is a *supported* statusline: PowerShell that keeps the pushed
-# JSON in a variable. What varies is the shape of the file around that assignment,
-# which is what the insertion and its inverse have to survive.
+# Every one of these is a *supported* statusline: PowerShell that reads standard input
+# and keeps the parsed JSON in a variable. What varies is the shape of the file around
+# that assignment, which is what the insertion and its inverse have to survive.
+#
+# Every fixture reads standard input, because that is now half the definition: a
+# `ConvertFrom-Json` with no lineage back to stdin is somebody else's JSON, and
+# anchoring on one produced a silent no-op on a real machine (oriel#1).
+$script:Read = "`$raw = [Console]::In.ReadToEnd()"
+
 $script:Shapes = [ordered]@{
-    'a blank line after the assignment' = "`$raw = 'x'`r`n`$d = `$raw | ConvertFrom-Json`r`n`r`nWrite-Host 'hi'`r`n"
-    'no blank line after the assignment' = "`$raw = 'x'`r`n`$d = `$raw | ConvertFrom-Json`r`nWrite-Host 'hi'`r`n"
-    'the assignment at the very start' = "`$d = `$raw | ConvertFrom-Json`r`nWrite-Host 'hi'`r`n"
-    'LF-only line endings' = "`$raw = 'x'`n`$d = `$raw | ConvertFrom-Json`n`nWrite-Host 'hi'`n"
-    'no trailing newline' = "`$raw = 'x'`r`n`$d = `$raw | ConvertFrom-Json`r`nWrite-Host 'hi'"
-    'the assignment on the last line, no trailing newline' = "`$raw = 'x'`r`n`$d = `$raw | ConvertFrom-Json"
-    'the assignment wrapped in try/catch' = "`$raw = 'x'`r`ntry { `$d = `$raw | ConvertFrom-Json } catch { `$d = `$null }`r`nWrite-Host 'hi'`r`n"
-    'a scoped assignment' = "`$raw = 'x'`r`n`$script:d = `$raw | ConvertFrom-Json`r`nWrite-Host 'hi'`r`n"
-    'ConvertFrom-Json called with an argument' = "`$raw = 'x'`r`n`$data = ConvertFrom-Json `$raw`r`nWrite-Host 'hi'`r`n"
-    'a comment mentioning ConvertFrom-Json first' = "# we call ConvertFrom-Json below`r`n`$d = `$raw | ConvertFrom-Json`r`nWrite-Host 'hi'`r`n"
-    'a pipeline broken across lines' = "`$d = `$raw |`r`n    ConvertFrom-Json`r`nWrite-Host 'hi'`r`n"
+    'a blank line after the assignment' = "$script:Read`r`n`$d = `$raw | ConvertFrom-Json`r`n`r`nWrite-Host 'hi'`r`n"
+    'no blank line after the assignment' = "$script:Read`r`n`$d = `$raw | ConvertFrom-Json`r`nWrite-Host 'hi'`r`n"
+    'the read and the parse on one line, at the very start' = "`$d = [Console]::In.ReadToEnd() | ConvertFrom-Json`r`nWrite-Host 'hi'`r`n"
+    'LF-only line endings' = "$script:Read`n`$d = `$raw | ConvertFrom-Json`n`nWrite-Host 'hi'`n"
+    'no trailing newline' = "$script:Read`r`n`$d = `$raw | ConvertFrom-Json`r`nWrite-Host 'hi'"
+    'the assignment on the last line, no trailing newline' = "$script:Read`r`n`$d = `$raw | ConvertFrom-Json"
+    'the assignment wrapped in try/catch' = "$script:Read`r`ntry { `$d = `$raw | ConvertFrom-Json } catch { `$d = `$null }`r`nWrite-Host 'hi'`r`n"
+    'a scoped assignment' = "$script:Read`r`n`$script:d = `$raw | ConvertFrom-Json`r`nWrite-Host 'hi'`r`n"
+    'ConvertFrom-Json called with an argument' = "$script:Read`r`n`$data = ConvertFrom-Json `$raw`r`nWrite-Host 'hi'`r`n"
+    'a comment mentioning ConvertFrom-Json first' = "# we call ConvertFrom-Json below`r`n$script:Read`r`n`$d = `$raw | ConvertFrom-Json`r`nWrite-Host 'hi'`r`n"
+    'a pipeline broken across lines' = "$script:Read`r`n`$d = `$raw |`r`n    ConvertFrom-Json`r`nWrite-Host 'hi'`r`n"
+    'the read reaching the parse through a reader and a trim' = "`$reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput())`r`n`$raw = `$reader.ReadToEnd()`r`n`$text = `$raw.Trim()`r`n`$d = `$text | ConvertFrom-Json`r`nWrite-Host 'hi'`r`n"
+    'the payload arriving through $input' = "`$d = `$input | ConvertFrom-Json`r`nWrite-Host 'hi'`r`n"
+    'Get-Content reading a bare dash' = "`$raw = Get-Content -Raw -`r`n`$d = `$raw | ConvertFrom-Json`r`nWrite-Host 'hi'`r`n"
 }
 
 # ---- a substituted environment ---------------------------------------------
@@ -291,6 +300,186 @@ Describe 'Install-Oriel: refusal is loud and changes nothing' {
         [System.IO.File]::WriteAllText($sl, $script:Shapes['a blank line after the assignment'], [System.Text.UTF8Encoding]::new($false))
         (script:Invoke-Installer $script:env).ExitCode | Should Be 0
         script:Get-Text $sl | Should Match 'oriel tee'
+    }
+}
+
+Describe 'Install-Oriel: the anchor traces back to standard input' {
+    # The field report behind all of this (oriel#1): the installer anchored on the FIRST
+    # ConvertFrom-Json in the file, which on a real machine was a helper parsing
+    # settings.json. The block was inserted after it, borrowed a variable holding
+    # settings rather than the payload, and wrote nothing, every render, silently.
+
+    AfterEach { script:Remove-Env $script:env }
+
+    # The reported statusline, reduced to what mattered: a helper that parses settings
+    # files, an early return above the real parse, and the payload arriving further down.
+    $script:Decoy = @"
+function Read-Effort {
+    foreach (`$p in @('settings.local.json', 'settings.json')) {
+        `$j = Get-Content -LiteralPath `$p -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (`$j.effort) { return `$j.effort.level }
+    }
+    return `$null
+}
+`$raw = [Console]::In.ReadToEnd()
+`$d = `$raw | ConvertFrom-Json
+Write-Host 'hi'
+"@
+
+    It 'walks past a ConvertFrom-Json that parses JSON from somewhere else' {
+        $script:env = script:New-Env
+        $sl = script:Set-Statusline $script:env $script:Decoy
+        $r = script:Invoke-Installer $script:env
+        $r.ExitCode | Should Be 0
+
+        $lines = (script:Get-Text $sl) -split "`r?`n"
+        $blockAt = [array]::FindIndex([string[]]$lines, [Predicate[string]]{ param($l) $l -like '*oriel tee (managed block*' })
+        # Directly after the line that parses what came in on standard input — not after
+        # the settings parse, which is where the old heuristic put it.
+        $lines[$blockAt - 1] | Should Match '\$d = \$raw \| ConvertFrom-Json'
+        $lines[$blockAt + 1] | Should Match 'Write-UsageState -StatusJson \$d\b'
+    }
+
+    It 'is not fooled by the argument form of the same decoy' {
+        # The reporter renamed the decoy variable and switched it off the pipe form to
+        # try to steer the old matcher. It patched the same wrong place a second time.
+        $script:env = script:New-Env
+        $body = "`$cfg = ConvertFrom-Json (Get-Content -Raw 'settings.json')`r`n" +
+                "`$raw = [Console]::In.ReadToEnd()`r`n" +
+                "`$d = `$raw | ConvertFrom-Json`r`nWrite-Host 'hi'`r`n"
+        $sl = script:Set-Statusline $script:env $body
+        script:Invoke-Installer $script:env | Out-Null
+
+        $lines = (script:Get-Text $sl) -split "`r?`n"
+        $blockAt = [array]::FindIndex([string[]]$lines, [Predicate[string]]{ param($l) $l -like '*oriel tee (managed block*' })
+        $lines[$blockAt - 1] | Should Match '\$d = \$raw \| ConvertFrom-Json'
+        # And the decoy line still has what followed it, untouched.
+        $lines[1] | Should Match 'ReadToEnd'
+    }
+
+    It 'refuses rather than guessing when nothing in the file reads standard input' {
+        # "If no unambiguous anchor is found, fail loudly and ask rather than patching a
+        # guess." A refusal a user can act on beats a silent no-op they cannot see.
+        $script:env = script:New-Env
+        $body = "`$cfg = Get-Content -Raw 'settings.json' | ConvertFrom-Json`r`nWrite-Host `$cfg.name`r`n"
+        $sl = script:Set-Statusline $script:env $body
+
+        $r = script:Invoke-Installer $script:env
+        $r.ExitCode | Should Be 2
+        $r.Report.verdict | Should Be 'refuse'
+        $r.Report.reason | Should Be 'no-stdin-source'
+        $r.Report.message | Should Match 'standard input'
+        $r.Report.conversionPrompt | Should Match 'ReadToEnd'
+        script:Get-Text $sl | Should BeExactly $body
+    }
+
+    It 'still tells apart a statusline that reads the payload and throws it away' {
+        $script:env = script:New-Env
+        $sl = script:Set-Statusline $script:env "`$input | ConvertFrom-Json | Out-Host`r`n"
+        (script:Invoke-Installer $script:env).Report.reason | Should Be 'no-json-assignment'
+    }
+}
+
+Describe 'Install-Oriel: the block changes nothing the user can see' {
+    # The second half of oriel#1, and the more damaging one: the tee set
+    # Set-StrictMode -Version Latest at file scope, the block dot-sourced it into the
+    # host statusline's scope, and from that line down every read of an absent key threw.
+    # It only reproduced when rate_limits was ABSENT — Free accounts, and every session
+    # before its first reply — so a complete probe payload passed and proved nothing.
+
+    AfterEach { script:Remove-Env $script:env }
+
+    # Ordinary, correct PowerShell against an optional-key payload, under the settings a
+    # careful statusline author would use.
+    $script:OptionalKeys = @'
+$ErrorActionPreference = 'Stop'
+$reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false))
+$raw = $reader.ReadToEnd()
+try { $d = $raw | ConvertFrom-Json } catch { $d = $null }
+try {
+    $ctx = $d.context_window
+    $pct = 0
+    if ($null -ne $ctx) { $pct = $ctx.used_percentage }
+    $where = ''
+    if ($null -ne $d.workspace) { $where = $d.workspace.current_dir }
+    Write-Host ("ok " + $pct + " " + $where)
+} catch {
+    Write-Host '?'
+}
+'@
+
+    It 'leaves a statusline that reads optional keys rendering exactly as before' {
+        $script:env = script:New-Env
+        script:Set-Statusline $script:env $script:OptionalKeys | Out-Null
+        $r = script:Invoke-Installer $script:env -Verify
+        # Before the fix this failed twice over: the strict mode leaked in, the sparse
+        # render printed '?' instead of its normal line, and the install rolled back.
+        $r.ExitCode | Should Be 0
+        $r.Report.verified | Should Be $true
+        $r.Report.verdict | Should Not Be 'rolled-back'
+    }
+
+    It 'leaks nothing into the host scope, not even its own functions' {
+        # The structural half of the fix: the block dot-sources inside `& { }`, so
+        # nothing it defines or sets survives the line. Asked of the scope itself rather
+        # than of one symptom, because the next leak will not be StrictMode.
+        $script:env = script:New-Env
+        $body = @'
+$reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false))
+$raw = $reader.ReadToEnd()
+try { $d = $raw | ConvertFrom-Json } catch { $d = $null }
+$leaked = @()
+if (Get-Command Write-UsageState -ErrorAction SilentlyContinue) { $leaked += 'Write-UsageState' }
+if (Get-Command ConvertTo-UsageRecord -ErrorAction SilentlyContinue) { $leaked += 'ConvertTo-UsageRecord' }
+if (Get-Command Write-JsonAtomic -ErrorAction SilentlyContinue) { $leaked += 'Write-JsonAtomic' }
+if ($leaked.Count -gt 0) { Write-Host ('leaked: ' + ($leaked -join ',')) } else { Write-Host 'clean' }
+'@
+        script:Set-Statusline $script:env $body | Out-Null
+        $r = script:Invoke-Installer $script:env -Verify
+        $r.ExitCode | Should Be 0
+        $r.Report.verified | Should Be $true
+    }
+
+    It 'takes the block back out when the patch changes what the statusline prints' {
+        # A fixture that is deliberately sensitive to its own file: three more lines in
+        # it and it says something different. That is a real change to what the user
+        # sees, so the install must not stand — the widget is worth less than the bar
+        # they look at all day (ADR 0011).
+        $script:env = script:New-Env
+        $body = @'
+$reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false))
+$raw = $reader.ReadToEnd()
+try { $d = $raw | ConvertFrom-Json } catch { $d = $null }
+Write-Host ("lines: " + (Get-Content -LiteralPath $PSCommandPath).Count)
+'@
+        $sl = script:Set-Statusline $script:env $body
+
+        $r = script:Invoke-Installer $script:env -Verify
+        $r.ExitCode | Should Be 3
+        $r.Report.verified | Should Be $false
+        $r.Report.verdict | Should Be 'rolled-back'
+        $r.Report.message | Should Match 'took the patch back out'
+        # The file is theirs again, byte for byte, and nothing is left lying beside it.
+        script:Get-Text $sl | Should BeExactly $body
+        (Test-Path -LiteralPath "$sl.bak") | Should Be $false
+    }
+
+    It 'installs anyway when the statusline is not comparable to itself' {
+        # A clock, a spinner, a git revision: output that differs between two identical
+        # renders cannot be held to a byte-for-byte rule, and a false alarm that blocks
+        # an install costs more than a missed one. The check stands down; the install
+        # goes through on the strength of the data-flow check alone.
+        $script:env = script:New-Env
+        $body = @'
+$reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false))
+$raw = $reader.ReadToEnd()
+try { $d = $raw | ConvertFrom-Json } catch { $d = $null }
+Write-Host ([guid]::NewGuid().ToString())
+'@
+        script:Set-Statusline $script:env $body | Out-Null
+        $r = script:Invoke-Installer $script:env -Verify
+        $r.ExitCode | Should Be 0
+        $r.Report.verified | Should Be $true
     }
 }
 

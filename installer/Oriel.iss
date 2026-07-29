@@ -296,12 +296,22 @@ begin
       MsgBox('Oriel could not install into your statusline, and nothing was changed:' + #13#10#13#10 +
              InstallFailure, mbError, MB_OK)
     else if Code = 3 then
+    begin
       { Success is only shown after verification passed. This one is the whole reason
         verification exists: the managed block is fail-silent, so without this the user
-        would find out days later, from a widget showing dashes. }
-      MsgBox('Oriel was installed, but it could not confirm that data started flowing, ' +
-             'so this is not being reported as a success:' + #13#10#13#10 + InstallFailure,
-             mbError, MB_OK)
+        would find out days later, from a widget showing dashes. Two outcomes share the
+        code, and they must not share the wording: one leaves the block in place with no
+        data flowing, the other found the block changing what the statusline prints and
+        already removed it again. }
+      if JsonString(Body, 'verdict') = 'rolled-back' then
+        MsgBox('Oriel changed your statusline, saw that the change affected what it ' +
+               'prints, and took the change back out. Your statusline is as it was, and ' +
+               'Oriel is not installed:' + #13#10#13#10 + InstallFailure, mbError, MB_OK)
+      else
+        MsgBox('Oriel was installed, but it could not confirm that data started flowing, ' +
+               'so this is not being reported as a success:' + #13#10#13#10 + InstallFailure,
+               mbError, MB_OK);
+    end
     else if Code <> 0 then
       MsgBox('Oriel could not finish setting up your statusline:' + #13#10#13#10 +
              InstallFailure, mbError, MB_OK);
