@@ -6,9 +6,11 @@ against user references. The rules that carry the look:
 - **Flat interior, no bevel.** No inset highlights, no top-to-bottom sheen gradient
   — those read as a fake 3D lip and were explicitly rejected. The body is an even
   dark translucent ground.
-- **A real border**: a 1px **gradient hairline** that follows the corners, slightly
-  brighter at the top. Defined enough to frame the card (not the barely-there line
-  it started as), but still a hairline — not a bevel.
+- **A real border**: a 1px **uniform hairline** (white at 15%) that follows the
+  corners. Defined enough to frame the card (not the barely-there line it started
+  as), but still a hairline — not a bevel. It was a gradient, brighter at the
+  top-left, until that light direction read as exactly the bevel the rule above
+  rejects; the border stays, the implied light source goes.
 - **Backdrop blur** behind the glass (the feature the user most liked). Default: on,
   at the strongest the compositor will grant. (Written here as "blur 30" until
   [ADR 0010](0010-blur-is-a-two-step-preference.md) — the platform takes a transparency

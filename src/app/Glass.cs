@@ -67,18 +67,11 @@ namespace Oriel
             return new SolidColorBrush(Color.FromArgb(a, 20, 20, 26));
         }
 
-        /// The 1px gradient hairline from the locked spec — brighter at the top-left,
-        /// fading round the curve.
-        public static IBrush Hairline() => new LinearGradientBrush
-        {
-            StartPoint = new Avalonia.RelativePoint(0.1, 0.0, Avalonia.RelativeUnit.Relative),
-            EndPoint = new Avalonia.RelativePoint(0.9, 1.0, Avalonia.RelativeUnit.Relative),
-            GradientStops =
-            {
-                new GradientStop(Color.Parse("#4DFFFFFF"), 0.0),
-                new GradientStop(Color.Parse("#14FFFFFF"), 0.42),
-                new GradientStop(Color.Parse("#08FFFFFF"), 1.0),
-            },
-        };
+        /// The 1px hairline round the card — one flat white at 15%, the same the whole way
+        /// round (ADR 0006). It was a top-left-bright gradient until the light direction read
+        /// as the bevel that ADR rules out; a uniform line frames the card without implying
+        /// a lit edge. This value is the dial: lower it and the card goes back to
+        /// barely-there, raise it and the line starts to draw attention on its own.
+        public static IBrush Hairline() => new SolidColorBrush(Color.Parse("#26FFFFFF"));
     }
 }
