@@ -15,7 +15,14 @@
 # only reshapes and persists the JSON Claude Code already pushed on stdin. Do not
 # add a call to GET /api/oauth/usage or any other fetch here.
 
-Set-StrictMode -Version Latest
+# Nothing at file scope may change how the caller behaves. This file is dot-sourced
+# from inside somebody else's statusline, and a bare `.` runs it in THAT script's
+# scope — so a `Set-StrictMode -Version Latest` here is not a setting for the tee, it
+# is a setting for the rest of the user's statusline. It was one, and it broke their
+# rendering: from the managed block down, every read of an optional key threw instead
+# of yielding $null, on precisely the accounts with no rate-limit data to show (field
+# report, oriel#1). Strict mode now lives inside the functions, where it belongs, and
+# the caller's scope is left exactly as it was found.
 
 . (Join-Path $PSScriptRoot 'Normalize.ps1')
 . (Join-Path $PSScriptRoot 'AtomicWrite.ps1')
@@ -48,6 +55,10 @@ function Write-UsageState {
         [Parameter()]
         [long] $Now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     )
+
+    # Inside the function, so it applies to this call and its callees and to nothing
+    # else. See the note at the top of the file.
+    Set-StrictMode -Version Latest
 
     $record = ConvertTo-UsageRecord -StatusJson $StatusJson -Now $Now
     if ($null -eq $record) { return $false }   # never-tee-nulls

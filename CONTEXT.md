@@ -36,10 +36,13 @@ normalized record. Written atomically by the tee, read by the widget.
 _Avoid_: cache, pipe, output file
 
 **Supported statusline**:
-A statusline Oriel can attach the **tee** to: one written in PowerShell that keeps
-the JSON Claude Code pushes it in a variable the tee can reach. The shape matters
-because the pushed JSON can only be read once — a statusline that consumes it
-without keeping it leaves nothing to tee (ADR 0011).
+A statusline Oriel can attach the **tee** to: one written in PowerShell that reads
+what Claude Code pushes on standard input and keeps the parsed result in a variable
+the tee can reach. Both halves are load-bearing. The pushed JSON can only be read
+once, so a statusline that consumes it without keeping it leaves nothing to tee; and
+a `ConvertFrom-Json` with no lineage back to standard input is parsing something
+else entirely — settings, a cache, `git` output — so it identifies no payload and is
+not an anchor (ADR 0011).
 _Avoid_: compatible statusline, valid statusline
 
 **Starter statusline**:

@@ -67,21 +67,48 @@ have and picks one of three behaviours (**triage**):
 | What you have | What Oriel does |
 |---|---|
 | No statusline | Writes you one — model, effort, context use, both rate-limit windows — declares it, and uses it. It is an ordinary script you then own and can edit. |
-| A statusline it can serve | Inserts a small marked block after the line that parses the JSON. **Nothing else in your file changes, byte for byte** — your colours, layout, line endings and habits all survive. |
+| A statusline it can serve | Inserts a small marked block after the line that parses the JSON your statusline read from standard input. **Nothing else in your file changes, byte for byte** — your colours, layout, line endings and habits all survive. |
 | Anything else | **Refuses**, changes nothing at all, and hands you text to paste into Claude Code that converts your statusline. Run it again afterwards. |
 
-A statusline Oriel can serve is one written in PowerShell that keeps the pushed JSON in
-a variable. Standard input can only be read once, so Oriel cannot fetch the JSON itself
-— it can only borrow a variable that already holds it. A bash, Node or Python
-statusline cannot be served at all.
+A statusline Oriel can serve is one written in PowerShell that reads standard input and
+keeps the parsed JSON in a variable. Standard input can only be read once, so Oriel
+cannot fetch the JSON itself — it can only borrow a variable that already holds it. A
+bash, Node or Python statusline cannot be served at all.
 
-Both install paths **verify before claiming success**: they trigger a render and wait
-to see the state file appear. If it does not, you get a diagnosis rather than a
-checkmark — because the inserted block is deliberately fail-silent, and without that
-check a wrong guess would leave you with a widget showing dashes forever and no idea
-why.
+Oriel finds that variable by following the payload, not by looking for the first
+`ConvertFrom-Json` in your file: it locates where you read standard input and works
+forward from there. If your statusline parses JSON from somewhere else too — your own
+settings, a cache, `git` output — those lines are left alone. If it cannot trace the
+payload at all, it refuses and tells you, rather than patching a line it guessed at.
+
+Both install paths **verify before claiming success**, and they check two different
+things:
+
+- **Data flows.** A render is triggered and the state file has to appear. If it does
+  not, you get a diagnosis rather than a checkmark — the inserted block is deliberately
+  fail-silent, so without this check a wrong guess would leave you with a widget showing
+  dashes forever and no idea why.
+- **Your statusline still prints exactly what it printed before**, checked with a
+  payload that has no rate-limit data in it — the shape a Free account gets, and every
+  session before its first reply. If the block changed anything you can see, it is taken
+  back out again in the same run and Oriel reports that it did not install. Your status
+  line is worth more than the widget.
 
 Installing twice replaces the block rather than stacking another one.
+
+### Testing your statusline by hand
+
+The tee honours `ORIEL_STATE_DIR`, so you can render your statusline against a throwaway
+state directory without touching the record the widget is reading:
+
+```powershell
+$env:ORIEL_STATE_DIR = "$env:TEMP\oriel-probe"
+'{"model":{"display_name":"x"}}' | & pwsh -NoProfile -File "$HOME\.claude\statusline.ps1"
+```
+
+That payload is deliberately sparse — no `rate_limits`, no `context_window`. A
+statusline that renders it cleanly renders anything. Add the rate-limit windows to see
+a record land in `$env:ORIEL_STATE_DIR\current.json`.
 
 ## Using it
 
