@@ -66,35 +66,22 @@ end itself:
 
 ## 5. Publish
 
-### The first time only: the clean-room copy
+### The clean-room line, and what watches it now
 
-Publishing is not reversible, which is why the public repository is created clean-room
-rather than by pushing this history (ADR 0012). The history is not sensitive so much as
-it is *working material*.
+Publishing is not reversible, which is why the private working material has never been in
+this repository's history (ADR 0012). Since the 2026-07-29 amendment there is **no staging
+copy and no second checkout**: the private material sits beside the code in `.workspace/`,
+its own git repository with its own private remote, git-ignored here. Releasing involves no
+copying, and nothing on this checklist is what stands between working notes and a public
+repository.
 
-**Crosses over:** `src/`, `tests/`, `installer/`, `docs/`, `build.ps1`, `CONTEXT.md`,
-`README.md`, `LICENSE`, `.gitignore`.
-
-**Stays behind:**
-
-- `.scratch/` in its entirety — tickets, specs, research notes and the prototype that
-  settled the starter statusline. Capture that prototype on a throwaway branch here if
-  it is worth keeping; it does not travel.
-- `docs/agents/` — how the private tracker is laid out, the triage label strings, where
-  the domain docs live. It describes the working process rather than Oriel, so it is
-  git-ignored rather than merely filtered: it cannot be published even by a script that
-  forgets to exclude it.
-- `CLAUDE.md`, for the same reason and one more: its content is three pointers into
-  `docs/agents/`. Published without them it is not private material so much as three
-  dangling links — the exact debt the publication ticket existed to clear.
-
-The staging copy reads from **`git ls-files`**, not the working tree, so anything
-git-ignored is excluded automatically and only the root-file allow-list needs
-maintaining. That is the property worth preserving if this is ever rewritten.
-
-Before the first push, confirm both halves. Two traps are baked into the commands
-below because both were hit while writing them, and both fail *silently* — a check that
-quietly matches nothing reports a clean repository forever:
+`tests/CleanRoom.Tests.ps1` is. It runs with the rest of the suite in step 2 and asserts
+that nothing private is tracked, that every private path is still covered by `.gitignore`,
+and — the half that is easy to forget — that the ignore rules have not grown so broad that
+they exclude the project itself. The checklist that used to live here was read by a person
+off a console; a check that quietly matches nothing reports a clean repository forever.
+Two traps hit while writing that checklist, kept because they are worth knowing when
+writing the next such check:
 
 - `Get-ChildItem -Recurse -Include '*.md'` **skips files sitting directly under
   `-Path`** unless the path ends in `\*`. Filter on `.Extension` instead.
@@ -102,23 +89,15 @@ quietly matches nothing reports a clean repository forever:
   by `.scratch`, so it matches almost nothing. Either drop `-SimpleMatch` and keep the
   regex, or drop the escape.
 
+One thing a test cannot judge is prose. A *link* into `.workspace/` from a published
+document would dangle in public, while a sentence *about* the private workspace is
+expected and correct — so read what this returns rather than counting it:
+
 ```powershell
-$stage = '<public-clone>'
-
-# 1. nothing from the private workspace came along
-Get-ChildItem -Path $stage -Recurse -Force -Directory |
-    Where-Object { $_.Name -in '.scratch', '.agents', '.claude' }
-
-# 2. no document LINKS into it. Prose that explains .scratch is private and absent is
-#    expected and correct — a link is what would dangle in public.
-$files = Get-ChildItem -Path $stage -Recurse -File |
-    Where-Object { $_.Extension -in '.md', '.ps1', '.cs', '.iss' }
-$files | Select-String -Pattern '\]\([^)]*\.scratch|\.\./\.\./\.scratch'
+Get-ChildItem -Recurse -File |
+    Where-Object { $_.Extension -in '.md', '.ps1', '.cs', '.iss' -and $_.FullName -notmatch '\\\.workspace\\' } |
+    Select-String -Pattern '\]\([^)]*\.workspace|\]\([^)]*\.scratch'
 ```
-
-Both should print nothing. Run `$files | Select-String '\.scratch'` too and read what
-comes back: every hit should be a sentence *about* the private workspace, not a path
-into it.
 
 ### Every time
 

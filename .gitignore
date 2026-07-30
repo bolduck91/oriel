@@ -1,12 +1,21 @@
 # runtime user data lives under ~/.claude/oriel/, never in the repo
 *.bak
 
-# Agent-workflow configuration: how the private tracker is laid out, which triage
-# label strings are used, where the domain docs live. It describes the working
-# process, not Oriel, and it belongs with .scratch/ on the private side of the line
-# ADR 0012 draws. Kept on disk — CLAUDE.md still points at it and it still works
-# locally — but untracked, so it cannot be published by accident.
-docs/agents/
+# The private working repository, and everything that belongs to it: tickets, specs,
+# research, agent skills, the agent-workflow docs and the project instructions that
+# point at them. It describes the working process, not Oriel.
+#
+# It shares this directory rather than a second checkout of the same code, and it is
+# its own git repository with its own private remote — so `git status` here can never
+# see it, and there is no copy step between a working tree and a published one to get
+# wrong (ADR 0012, amended). tests/CleanRoom.Tests.ps1 is what enforces this: an
+# ignore rule that stops matching is silent, and the whole clean-room property rests
+# on these five lines.
+.workspace/
+.scratch/
+.agents/
+.claude/
+/CLAUDE.md
 
 # .NET build output (ADR 0008: the widget is now a compiled Avalonia app)
 bin/
