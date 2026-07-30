@@ -11,6 +11,36 @@ research, prototypes — left behind. The history is not sensitive so much as it
 *working material*, and publishing is not reversible. Code, `docs/` and `CONTEXT.md`
 cross over; the handful of ADR links into the old workspace become plain references.
 
+## Amendment, 2026-07-29: one working directory, two repositories
+
+Clean-room publication was a decision about **the initial publication of pre-launch
+history**, and that has happened. It was read afterwards as a standing arrangement —
+two live checkouts of the same code, private material in one of them, changes copied
+across by hand to publish. Fixing oriel#1 is what priced that reading: eleven files
+hand-copied, eleven files hand-verified against the pre-fix versions, and the leak
+checks in `docs/releasing.md` read by a person off a console. None of it was hard and
+all of it was a chance to publish the wrong bytes or to miss that the two copies had
+diverged. Merges land on the public side now, so the private copy could go stale
+without anything saying so.
+
+So there is one working directory: the public clone. The private material lives inside
+it in `.workspace/`, **its own git repository with its own private remote**, ignored by
+the public one. The properties that mattered are kept and the copy step is gone:
+
+- `git ls-files` in the public repository cannot see the private material, which is the
+  same guarantee the staging copy gave — enforced now by `tests/CleanRoom.Tests.ps1`
+  rather than by remembering to run a checklist.
+- The pre-launch history stays unpublished: it is still in the original private
+  repository, which is now an archive and not a working copy.
+- Tickets and code are separate histories, deliberately. A ticket is working material
+  and does not belong in a public log.
+
+What it costs, stated plainly: a careless `git add -A` in the public repository could
+publish `.workspace/` irreversibly. Five lines of `.gitignore` prevent it and a test
+asserts both that nothing private is tracked *and* that those five lines still match
+something — because an ignore rule for a path that has been renamed away fails silently
+and reports a clean repository forever.
+
 ## The exe alone was never an installation
 
 The widget reads the state file; the state file is written by the tee; the tee only
